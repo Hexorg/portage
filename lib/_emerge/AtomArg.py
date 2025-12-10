@@ -6,6 +6,7 @@ from _emerge.DependencyArg import DependencyArg
 
 
 class AtomArg(DependencyArg):
+    """ A dependency qualification (e.g., `>=dev-libs/openssl-1.1:0=`) """
     __slots__ = ("atom", "pset")
 
     def __init__(self, atom=None, **kwargs):

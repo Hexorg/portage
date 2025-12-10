@@ -6,6 +6,7 @@ from portage._sets import SETPREFIX
 
 
 class SetArg(DependencyArg):
+    """ A 'set' dependency - e.g. from /etc/portage/sets - a set of package dependencies."""
     __slots__ = ("name", "pset")
 
     def __init__(self, pset=None, **kwargs):

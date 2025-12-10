@@ -4830,6 +4830,7 @@ class depgraph:
             spinner = self._frozen_config.spinner
             if spinner is not None and spinner.update is not spinner.update_quiet:
                 spinner_cb.handle = self._event_loop.call_soon(spinner_cb)
+
             return self._select_files(args)
         except self._virtual_cycle_error as e:
             self._virtual_cycle = e.value
@@ -5276,7 +5277,56 @@ class depgraph:
         # is to allow the user to force a specific merge order.
         self._dynamic_config._initial_arg_list = args[:]
 
-        return self._resolve(myfavorites)
+        # Z3 SMT solver integration hook (POC)
+        # Check PORTAGE_USE_Z3 environment variable to enable experimental Z3 resolver
+        if os.environ.get("PORTAGE_USE_Z3") == "1":
+            return self._resolve_z3(myfavorites)
+        else:
+            return self._resolve(myfavorites)
+
+    def _resolve_z3(self, myfavorites):
+        """
+        Z3 SMT solver-based dependency resolution
+
+        This is an experimental alternative to _resolve() that uses the Z3 SMT
+        solver for dependency resolution. Enable with PORTAGE_USE_Z3=1.
+
+        LIMITATIONS:
+        - Basic DEPEND/RDEPEND only (no BDEPEND/PDEPEND/IDEPEND)
+        - No USE flag dependency evaluation
+        - No OR dependencies || ( )
+        - Basic slot constraints only
+        - Simple blocker support
+        - No optimization for --update
+        - No autounmask suggestions
+
+        Falls back to native solver on any error or if Z3 not installed.
+        """
+        try:
+            from _emerge.resolver.z3_depgraph import Z3DepGraphResolver
+
+            writemsg(
+                colorize("GOOD", ">>> ") + "Using Z3 SMT solver (experimental POC)\n",
+                noiselevel=-1,
+            )
+
+            z3_resolver = Z3DepGraphResolver(self)
+            return z3_resolver.resolve(myfavorites)
+
+        except ImportError as e:
+            writemsg(
+                colorize("WARN", "!!! ")
+                + f"Z3 solver not available ({e}), falling back to native solver\n",
+                noiselevel=-1,
+            )
+            return self._resolve(myfavorites)
+        except Exception as e:
+            writemsg(
+                colorize("WARN", "!!! ")
+                + f"Z3 solver error ({e}), falling back to native solver\n",
+                noiselevel=-1,
+            )
+            return self._resolve(myfavorites)
 
     def _gen_reinstall_sets(self):
         atom_list = []
@@ -5313,6 +5363,9 @@ class depgraph:
         onlydeps = "--onlydeps" in self._frozen_config.myopts
         args = self._dynamic_config._initial_arg_list[:]
 
+        # This function does a LOT that is paramount to how portage behaves
+        # Phase 1 - Build root set of packages and their dependencies
+        # Essentially things on the command line expanded to PackageArg (SetArg/AtomArg are expanded properly)
         for arg in self._expand_set_args(args, add_to_digraph=True):
             myroot = arg.root_config.root
             pkgsettings = self._frozen_config.pkgsettings[myroot]
@@ -5324,11 +5377,14 @@ class depgraph:
                 dep = Dependency(atom=atom, onlydeps=onlydeps, root=myroot, parent=arg)
                 try:
                     pprovided = pprovideddict.get(atom.cp)
+                    # "provided" package is a package declared in `package.provided` - pretend this is installed.
                     if pprovided and portage.match_from_list(atom, pprovided):
                         # A provided package has been specified on the command line.
                         self._dynamic_config._pprovided_args.append((arg, atom))
                         continue
+                    # if this is a .tbz2 or .ebuild file
                     if isinstance(arg, PackageArg):
+                        # Immediately go into solver mode for each .ebuild or .tbz2 file
                         if (
                             not self._add_pkg(arg.package, dep)
                             or not self._create_graph()
@@ -5472,13 +5528,17 @@ class depgraph:
         except NameError:
             pass
 
+        # Phase 2
         # Now that the root packages have been added to the graph,
         # process the dependencies.
         if not self._create_graph():
             self._apply_parent_use_changes()
             return 0, myfavorites
 
+
+        # Phase 3: Resolve conflicts and validate
         try:
+            # Resolve conflicts and serialize tasks to compute merge order
             self.altlist()
         except self._unknown_internal_error:
             return False, myfavorites

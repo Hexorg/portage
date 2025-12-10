@@ -9,6 +9,7 @@ from portage.dep import _repo_separator
 
 
 class PackageArg(DependencyArg):
+    """A 'package' dependency arg - specific version of an ebuild (e.g., `dev-libs/openssl-3.0.1`)"""
     def __init__(self, package=None, **kwargs):
         DependencyArg.__init__(self, **kwargs)
         self.package = package
